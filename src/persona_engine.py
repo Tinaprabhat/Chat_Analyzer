@@ -1,5 +1,6 @@
 import re
 from typing import Dict, List, Tuple
+import numpy as np
 from src.logger import logger
 
 # ── Lazy spaCy singleton ───────────────────────────────────────────────────────
@@ -26,6 +27,14 @@ def _get_textblob():
         from textblob import TextBlob
         _textblob = TextBlob
     return _textblob
+
+
+def _is_meaningful_object(token):
+    return (
+        token.pos_ in ["NOUN", "PROPN"]
+        and not token.is_stop
+        and len(token.text) > 3
+    )
 
 
 # ── NER label → readable fact prefix ──────────────────────────────────────────
@@ -138,12 +147,22 @@ def _personality_from_stats(stats: Dict) -> str:
     return ", ".join(traits) if traits else "neutral"
 
 
-def _communication_style_from_stats(stats: Dict) -> str:
+def _communication_style_from_stats(stats: Dict, percentile_thresholds: Tuple[float, float] = None) -> str:
     al = stats.get("avg_msg_length", 0)
+    if percentile_thresholds is not None:
+        p33, p66 = percentile_thresholds
+        if al > p66:
+            length = "verbose"
+        elif al < p33:
+            length = "terse"
+        else:
+            length = "moderate"
+    else:
+        length = "long" if al > 20 else ("short" if al < 5 else "medium-length")
+
     ec = stats.get("emoji_count", 0)
-    length = "long" if al > 20 else ("short" if al < 5 else "medium-length")
-    emoji  = "heavy emoji use" if ec > 5 else ("some emojis" if ec > 0 else "no emojis")
-    style  = "casual" if ec > 2 else "neutral"
+    emoji = "heavy emoji use" if ec > 5 else ("some emojis" if ec > 0 else "no emojis")
+    style = "casual" if ec > 2 else "neutral"
     return f"{style}, {length} messages, {emoji}"
 
 
@@ -175,13 +194,14 @@ def extract_semantic_frames(messages: List[str]) -> Dict:
                         subj = child.text.lower()
                         break
                 
-                # Find direct object
+                # Find direct object and keep only content nouns
                 obj = None
                 for child in token.subtree:
-                    if "dobj" in child.dep_ or "attr" in child.dep_:
+                    if (("dobj" in child.dep_ or "attr" in child.dep_)
+                            and _is_meaningful_object(child)):
                         obj = child.text.lower()
                         break
-                
+
                 if subj and obj:
                     triple = (subj, token.text.lower(), obj)
                     if triple not in seen_triples:
@@ -294,6 +314,8 @@ def extract_ner_persona(conv: Dict) -> Dict:
     """spaCy NER + stats-derived persona — no LLM required."""
     nlp    = _get_nlp()
     stats  = extract_statistical_persona(conv)
+    all_lengths = [user_stats["avg_msg_length"] for user_stats in stats.values()]
+    style_thresholds = tuple(np.percentile(all_lengths, [33, 66])) if all_lengths else None
     result = {}
 
     for user_key, msg_list in [("User_1", conv["user1_msgs"]), ("User_2", conv["user2_msgs"])]:
@@ -321,7 +343,7 @@ def extract_ner_persona(conv: Dict) -> Dict:
             "habits":             _habits_from_signals(user_stats["signals"]),
             "personal_facts":     personal_facts,
             "personality":        _personality_from_stats(user_stats),
-            "communication_style": _communication_style_from_stats(user_stats),
+            "communication_style": _communication_style_from_stats(user_stats, style_thresholds),
         }
     return result
 

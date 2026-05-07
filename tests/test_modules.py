@@ -188,6 +188,26 @@ class TestPersonaEngine:
             for fact in result[user_key]["personal_facts"]:
                 assert isinstance(fact, str)
 
+    def test_relative_communication_thresholds(self):
+        from src.persona_engine import extract_ner_persona
+        conv = {
+            "conv_id": 1,
+            "user1_msgs": ["Hi.", "Bye."],
+            "user2_msgs": [
+                "I wrote a long detailed explanation about a project and how it works.",
+                "I am sharing an extended description with many words and examples."
+            ]
+        }
+        result = extract_ner_persona(conv)
+        assert "terse" in result["User_1"]["communication_style"]
+        assert "verbose" in result["User_2"]["communication_style"]
+
+    def test_semantic_frames_filter_objects_to_nouns(self):
+        from src.persona_engine import extract_semantic_frames
+        frames = extract_semantic_frames(["I love her.", "I visited London."])
+        assert ("i", "love", "her") not in frames["relationship_triples"]
+        assert ("i", "visited", "london") in frames["relationship_triples"]
+
     def test_aggregate_persona_with_ner_key(self):
         from src.persona_engine import aggregate_persona_across_batches
         personas = [
