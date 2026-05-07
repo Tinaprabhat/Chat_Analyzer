@@ -21,7 +21,7 @@ for d in [DATA_DIR, KB_DIR, LOG_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ── Batching ───────────────────────────────────────────────────────────────────
-BATCH_SIZE              = 10          # conversations per batch
+BATCH_SIZE              = 100         # conversations per batch
 CHECKPOINT_INTERVAL     = 100         # 100-conversation chronological checkpoint
 
 # ── Models ────────────────────────────────────────────────────────────────────

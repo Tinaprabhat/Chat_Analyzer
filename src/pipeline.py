@@ -1,6 +1,6 @@
 from tqdm import tqdm
 from src.preprocessor import load_and_parse, make_batches, make_chronological_checkpoints
-from src.topic_engine import detect_topics_in_batch
+from src.topic_engine import detect_topics_in_batch, detect_topics_in_conversation, cluster_keywords_into_topics
 from src.summarizer import summarize_batch, summarize_checkpoint, summarize_topic_segment
 from src.persona_engine import extract_full_persona, aggregate_persona_across_batches
 from src.kb_store import (store_topics, store_summary, store_checkpoint,
@@ -62,10 +62,14 @@ def run_pipeline(csv_path: str = None, pdf_path: str = None, force_rebuild: bool
     for batch in tqdm(batches, desc="Processing batches"):
         bid = batch["batch_id"]
         try:
-            # Topics
-            topics  = detect_topics_in_batch(batch)
+            # Topics: Extract keywords per conversation, then cluster
+            all_keywords = []
+            for conv in batch["convs"]:
+                keywords = detect_topics_in_conversation(conv)
+                all_keywords.append(keywords)
+            topics = cluster_keywords_into_topics(all_keywords)
 
-            # Summary
+            # Summary (batch-level)
             summary = summarize_batch(batch)
 
             # Per-topic summaries

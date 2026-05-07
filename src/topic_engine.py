@@ -118,6 +118,16 @@ def cluster_keywords_into_topics(all_keywords: List[List[str]]) -> List[Dict]:
     return result
 
 
+def detect_topics_in_conversation(conv: Dict) -> List[str]:
+    """
+    Topic detection for a single conversation.
+    Returns list of keywords extracted from the conversation.
+    """
+    keywords = extract_keywords(conv["full_text"])
+    logger.debug(f"Conv {conv['conv_id']}: extracted {len(keywords)} keywords")
+    return keywords
+
+
 def detect_topics_in_batch(batch: Dict) -> List[Dict]:
     """
     Full topic detection pipeline for one batch.
