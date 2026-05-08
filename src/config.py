@@ -35,9 +35,9 @@ OLLAMA_BASE_URL         = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # ── API Keys (from .env file) ──────────────────────────────────────────────────
 GROQ_API_KEY            = os.getenv("GROQ_API_KEY", "")
 
-# ── KeyBERT ───────────────────────────────────────────────────────────────────
-KEYBERT_TOP_N           = 5
-KEYBERT_NGRAM           = (1, 2)
+# ── YAKE ─────────────────────────────────────────────────────────────────────
+YAKE_TOP_N              = 5
+YAKE_MAX_NGRAM          = 2
 
 # ── Topic detection ───────────────────────────────────────────────────────────
 TOPIC_SIMILARITY_THRESHOLD = 0.35    # below = new topic

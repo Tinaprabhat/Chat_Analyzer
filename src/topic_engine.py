@@ -1,15 +1,14 @@
 from typing import List, Dict
 import numpy as np
-from keybert import KeyBERT
+import yake
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from src.config import (EMBEDDING_MODEL, KEYBERT_TOP_N, KEYBERT_NGRAM,
+from src.config import (EMBEDDING_MODEL, YAKE_TOP_N, YAKE_MAX_NGRAM,
                          TOPIC_SIMILARITY_THRESHOLD)
 from src.logger import logger
 
 # ── Lazy singletons ────────────────────────────────────────────────────────────
 _embedder: SentenceTransformer = None
-_kw_model: KeyBERT             = None
 
 NOISE_WORDS = {
     "yeah", "yes", "no", "ok", "okay", "lol", "haha", "hey", "hi",
@@ -27,13 +26,6 @@ def _get_embedder() -> SentenceTransformer:
     return _embedder
 
 
-def _get_kw_model() -> KeyBERT:
-    global _kw_model
-    if _kw_model is None:
-        _kw_model = KeyBERT(model=_get_embedder())
-    return _kw_model
-
-
 def _clean_text(text: str) -> str:
     """Remove noise words and short tokens."""
     tokens = text.lower().split()
@@ -42,23 +34,21 @@ def _clean_text(text: str) -> str:
 
 
 def extract_keywords(text: str) -> List[str]:
-    """Extract top keywords from text using KeyBERT."""
+    """Extract top keywords from text using YAKE."""
     cleaned = _clean_text(text)
     if len(cleaned.split()) < 3:
         return []
     try:
-        kw = _get_kw_model()
-        results = kw.extract_keywords(
-            cleaned,
-            keyphrase_ngram_range=KEYBERT_NGRAM,
-            stop_words="english",
-            top_n=KEYBERT_TOP_N,
-            use_mmr=True,
-            diversity=0.5
+        extractor = yake.KeywordExtractor(
+            lan="en",
+            n=YAKE_MAX_NGRAM,
+            top=YAKE_TOP_N,
+            dedupLim=0.9,
         )
+        results = extractor.extract_keywords(cleaned)
         return [kw for kw, _ in results]
     except Exception as e:
-        logger.warning(f"KeyBERT failed: {e}")
+        logger.warning(f"YAKE failed: {e}")
         return []
 
 

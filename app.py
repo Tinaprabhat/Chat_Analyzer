@@ -201,7 +201,7 @@ with st.sidebar:
     st.markdown("### 🔧 Pipeline Info")
     st.markdown(
         "**KB build**: fully offline  \n"
-        "KeyBERT topics · TextRank summaries · spaCy NER personas  \n\n"
+        "YAKE topics · TextRank summaries · spaCy NER personas  \n\n"
         "**Query answering**: Groq → Ollama fallback"
     )
 

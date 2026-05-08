@@ -40,7 +40,7 @@ def check_python():
 def check_packages():
     print(f"\n{BOLD}[2] Required Packages{RESET}")
     required = {
-        "keybert":              "keybert",
+        "yake":                 "yake",
         "sentence_transformers":"sentence-transformers",
         "chromadb":             "chromadb",
         "groq":                 "groq",

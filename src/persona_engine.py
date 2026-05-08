@@ -1,506 +1,827 @@
+# persona_engine.py — Multilayer Persona Engine V2
+
+
 import re
-from typing import Dict, List, Tuple
-import numpy as np
-from src.logger import logger
+import math
+from collections import Counter, defaultdict
+from datetime import datetime
 
-# ── Lazy spaCy singleton ───────────────────────────────────────────────────────
-_nlp = None
+import spacy
+from textblob import TextBlob
 
-def _get_nlp():
-    global _nlp
-    if _nlp is None:
-        import spacy
-        try:
-            _nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            spacy.cli.download("en_core_web_sm")
-            _nlp = spacy.load("en_core_web_sm")
-    return _nlp
+# =========================================================
+# LOAD NLP MODEL
+# =========================================================
 
+try:
+    nlp = spacy.load("en_core_web_sm")
+except:
+    nlp = None
 
-# ── Lazy TextBlob singleton for sentiment analysis ──────────────────────────────
-_textblob = None
+# =========================================================
+# SIGNAL BANKS
+# =========================================================
 
-def _get_textblob():
-    global _textblob
-    if _textblob is None:
-        from textblob import TextBlob
-        _textblob = TextBlob
-    return _textblob
-
-
-def _is_meaningful_object(token):
-    return (
-        token.pos_ in ["NOUN", "PROPN"]
-        and not token.is_stop
-        and len(token.text) > 3
-    )
-
-
-# ── NER label → readable fact prefix ──────────────────────────────────────────
-_NER_LABELS = {
-    "PERSON":      "mentions person",
-    "ORG":         "mentions organization",
-    "GPE":         "mentions location",
-    "LOC":         "mentions location",
-    "NORP":        "mentions group/nationality",
-    "PRODUCT":     "mentions product",
-    "MONEY":       "mentions money",
-    "DATE":        "mentions date",
-    "TIME":        "mentions time",
-    "EVENT":       "mentions event",
-    "WORK_OF_ART": "mentions work of art",
-    "FAC":         "mentions facility",
-    "LANGUAGE":    "mentions language",
+FOOD_WORDS = {
+    "cook", "cooking", "food", "eat", "eating", "chef", "meal",
+    "restaurant", "kitchen", "recipe", "bake", "baking", "dinner",
+    "lunch", "breakfast", "dish", "cuisine", "drink", "coffee"
 }
 
-# ── Keyword signal banks ───────────────────────────────────────────────────────
-FOOD_WORDS    = {"food", "eat", "cook", "restaurant", "meal", "lunch", "dinner",
-                 "breakfast", "recipe", "hungry", "delicious", "coffee", "drink"}
-FITNESS_WORDS = {"gym", "workout", "exercise", "yoga", "run", "running", "hike",
-                 "hiking", "sport", "sports", "fitness", "training", "walk"}
-WORK_WORDS    = {"job", "work", "office", "meeting", "project", "boss", "career",
-                 "business", "company", "client", "salary", "interview"}
-FAMILY_WORDS  = {"family", "mom", "dad", "parent", "brother", "sister", "kids",
-                 "children", "husband", "wife", "marriage", "relationship"}
-SOCIAL_WORDS  = {"friend", "friends", "party", "social", "hang", "meet", "outing"}
+PET_WORDS = {
+    "dog", "cat", "pet", "animal", "fish", "bird", "rabbit",
+    "puppy", "kitten", "hamster", "turtle"
+}
 
+FITNESS_WORDS = {
+    "gym", "workout", "exercise", "fitness", "run", "running",
+    "yoga", "sport", "training", "weights", "hike", "hiking", "cycling"
+}
 
-def _count_signal(text_lower: str, word_set: set) -> int:
-    return sum(1 for w in word_set if w in text_lower)
+TECH_WORDS = {
+    "ai", "ml", "llm", "rag", "agent", "python", "model",
+    "transformer", "neural", "system", "architecture", "backend",
+    "frontend", "deployment", "docker", "fastapi", "streamlit"
+}
 
+CAREER_WORDS = {
+    "job", "career", "internship", "salary", "placement",
+    "resume", "hire", "company", "interview"
+}
 
-def _avg_msg_length(messages: List[str]) -> float:
-    if not messages:
-        return 0.0
-    return round(sum(len(m.split()) for m in messages) / len(messages), 2)
+LEARNING_WORDS = {
+    "learn", "study", "understand", "deep dive", "explain",
+    "teach", "notes", "roadmap", "syllabus"
+}
 
+EMOTION_POSITIVE = {
+    "love", "enjoy", "great", "awesome", "amazing",
+    "happy", "excited", "fun"
+}
 
-def _question_ratio(messages: List[str]) -> float:
-    if not messages:
-        return 0.0
-    return round(sum(1 for m in messages if "?" in m) / len(messages), 2)
+EMOTION_NEGATIVE = {
+    "hate", "frustrated", "confused", "bad",
+    "stress", "difficult", "hard", "annoying"
+}
 
-
-def _emoji_count(messages: List[str]) -> int:
-    pattern = re.compile(
-        "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F9FF☀-⛿✀-➿]"
-    )
-    return sum(len(pattern.findall(m)) for m in messages)
-
-
-def _vocabulary_richness(messages: List[str]) -> float:
-    all_words = " ".join(messages).lower().split()
-    if not all_words:
-        return 0.0
-    return round(len(set(all_words)) / len(all_words), 3)
-
-
-def extract_statistical_persona(conv: Dict) -> Dict:
-    """Pure stats-based persona per conversation."""
-    result = {}
-    for user_key, msg_list in [("User_1", conv["user1_msgs"]), ("User_2", conv["user2_msgs"])]:
-        full_text = " ".join(msg_list).lower()
-        result[user_key] = {
-            "avg_msg_length": _avg_msg_length(msg_list),
-            "question_ratio": _question_ratio(msg_list),
-            "emoji_count":    _emoji_count(msg_list),
-            "vocab_richness": _vocabulary_richness(msg_list),
-            "msg_count":      len(msg_list),
-            "signals": {
-                "food_mentions":    _count_signal(full_text, FOOD_WORDS),
-                "fitness_mentions": _count_signal(full_text, FITNESS_WORDS),
-                "work_mentions":    _count_signal(full_text, WORK_WORDS),
-                "family_mentions":  _count_signal(full_text, FAMILY_WORDS),
-                "social_mentions":  _count_signal(full_text, SOCIAL_WORDS),
-            }
-        }
-    return result
-
-
-def _habits_from_signals(signals: Dict) -> List[str]:
-    mapping = [
-        ("food_mentions",    "discusses food/cooking"),
-        ("fitness_mentions", "discusses fitness/exercise"),
-        ("work_mentions",    "frequently mentions work"),
-        ("family_mentions",  "discusses family"),
-        ("social_mentions",  "socially engaged"),
+PREFERENCE_PATTERNS = {
+    "concise_answers": [
+        r"short answer",
+        r"concise",
+        r"brief",
+        r"keep it short"
+    ],
+    "detailed_answers": [
+        r"deep dive",
+        r"detailed",
+        r"full explanation",
+        r"step by step"
+    ],
+    "practical_focus": [
+        r"industry relevant",
+        r"real world",
+        r"production",
+        r"deploy"
+    ],
+    "systems_thinking": [
+        r"architecture",
+        r"workflow",
+        r"pipeline",
+        r"system design"
     ]
-    return [label for key, label in mapping if signals.get(key, 0) >= 2]
+}
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 
-def _personality_from_stats(stats: Dict) -> str:
-    traits = []
-    if stats.get("question_ratio", 0) > 0.4:
-        traits.append("inquisitive")
-    if stats.get("emoji_count", 0) > 3:
-        traits.append("expressive")
-    vr = stats.get("vocab_richness", 0)
-    if vr > 0.75:
-        traits.append("articulate")
-    al = stats.get("avg_msg_length", 0)
-    if al > 20:
-        traits.append("verbose")
-    elif al < 5:
-        traits.append("terse")
-    return ", ".join(traits) if traits else "neutral"
+def clean_text(text):
+    text = str(text)
+    text = text.replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
-def _communication_style_from_stats(stats: Dict, percentile_thresholds: Tuple[float, float] = None) -> str:
-    al = stats.get("avg_msg_length", 0)
-    if percentile_thresholds is not None:
-        p33, p66 = percentile_thresholds
-        if al > p66:
-            length = "verbose"
-        elif al < p33:
-            length = "terse"
+
+def tokenize(text):
+    return re.findall(r"\b\w+\b", text.lower())
+
+
+
+def safe_div(a, b):
+    return a / b if b else 0
+
+
+
+def count_matches(tokens, vocab):
+    return sum(1 for t in tokens if t in vocab)
+
+
+# =========================================================
+# 1. STATS ENGINE
+# =========================================================
+
+
+class StatsEngine:
+
+    def extract(self, messages):
+        joined = " ".join(messages)
+        tokens = tokenize(joined)
+
+        total_words = len(tokens)
+        total_msgs = max(len(messages), 1)
+
+        avg_msg_length = safe_div(total_words, total_msgs)
+
+        question_ratio = safe_div(
+            sum(1 for m in messages if "?" in m),
+            total_msgs
+        )
+
+        emoji_count = len(re.findall(
+            r"[😀-🙏🌀-🗿🚀-🛿🇠-🇿]",
+            joined
+        ))
+
+        vocab_richness = safe_div(len(set(tokens)), total_words)
+
+        return {
+            "message_count": total_msgs,
+            "total_words": total_words,
+            "avg_msg_length": round(avg_msg_length, 2),
+            "question_ratio": round(question_ratio, 2),
+            "emoji_count": emoji_count,
+            "vocab_richness": round(vocab_richness, 2)
+        }
+
+
+# =========================================================
+# 2. EVENT EXTRACTION LAYER
+# =========================================================
+
+
+class EventExtractionLayer:
+
+    def extract(self, messages):
+        events = []
+
+        for msg in messages:
+            text = clean_text(msg)
+            tokens = tokenize(text)
+
+            if count_matches(tokens, TECH_WORDS) >= 2:
+                events.append({
+                    "type": "interest",
+                    "value": "technology_ai"
+                })
+
+            if count_matches(tokens, CAREER_WORDS) >= 1:
+                events.append({
+                    "type": "goal",
+                    "value": "career_growth"
+                })
+
+            if count_matches(tokens, LEARNING_WORDS) >= 1:
+                events.append({
+                    "type": "behavior",
+                    "value": "active_learning"
+                })
+
+            if any(w in tokens for w in EMOTION_POSITIVE):
+                events.append({
+                    "type": "emotion",
+                    "value": "positive"
+                })
+
+            if any(w in tokens for w in EMOTION_NEGATIVE):
+                events.append({
+                    "type": "emotion",
+                    "value": "negative"
+                })
+
+            # Goal detection
+            if re.search(r"want to|aim to|trying to", text.lower()):
+                events.append({
+                    "type": "goal_expression",
+                    "value": text[:120]
+                })
+
+        return events
+
+
+# =========================================================
+# 3. PREFERENCE MEMORY LAYER
+# =========================================================
+
+
+class PreferenceMemoryLayer:
+
+    def extract(self, messages):
+        prefs = defaultdict(int)
+
+        for msg in messages:
+            text = clean_text(msg).lower()
+
+            for pref_name, patterns in PREFERENCE_PATTERNS.items():
+                for p in patterns:
+                    if re.search(p, text):
+                        prefs[pref_name] += 1
+
+        final_prefs = []
+
+        for k, v in prefs.items():
+            confidence = min(1.0, 0.4 + (v * 0.1))
+
+            final_prefs.append({
+                "preference": k,
+                "strength": round(confidence, 2),
+                "evidence_count": v
+            })
+
+        return final_prefs
+
+
+# =========================================================
+# 4. SENTIMENT ENGINE
+# =========================================================
+
+
+class SentimentEngine:
+
+    def extract(self, messages):
+
+        sentiments = []
+
+        for msg in messages:
+            text = clean_text(msg)
+
+            polarity = TextBlob(text).sentiment.polarity
+
+            if polarity > 0.2:
+                label = "positive"
+            elif polarity < -0.2:
+                label = "negative"
+            else:
+                label = "neutral"
+
+            sentiments.append({
+                "text": text[:120],
+                "polarity": round(polarity, 2),
+                "label": label
+            })
+
+        avg_sentiment = safe_div(
+            sum(s["polarity"] for s in sentiments),
+            len(sentiments)
+        )
+
+        if avg_sentiment > 0.2:
+            overall = "optimistic"
+        elif avg_sentiment < -0.2:
+            overall = "frustrated"
         else:
-            length = "moderate"
-    else:
-        length = "long" if al > 20 else ("short" if al < 5 else "medium-length")
+            overall = "balanced"
 
-    ec = stats.get("emoji_count", 0)
-    emoji = "heavy emoji use" if ec > 5 else ("some emojis" if ec > 0 else "no emojis")
-    style = "casual" if ec > 2 else "neutral"
-    return f"{style}, {length} messages, {emoji}"
+        return {
+            "overall_sentiment": overall,
+            "average_polarity": round(avg_sentiment, 2),
+            "samples": sentiments[:10]
+        }
 
 
-# ── Semantic Frame Engine ──────────────────────────────────────────────────────
-def extract_semantic_frames(messages: List[str]) -> Dict:
-    """
-    Extract relationship triples and role signals using dependency parsing.
-    Returns dict with relationship triples and role signals.
-    """
-    nlp = _get_nlp()
-    frames = {
-        "relationship_triples": [],  # (subject, predicate, object)
-        "role_signals": {},          # entity → roles/relationships
-        "action_targets": {}         # action → target entities
-    }
-    
-    seen_triples = set()
-    
-    for msg in messages:
-        doc = nlp(msg)
-        
-        # Extract subject-verb-object triples from dependency parse
-        for token in doc:
-            if token.pos_ == "VERB":
-                # Find subject
-                subj = None
-                for child in token.subtree:
-                    if "nsubj" in child.dep_:
-                        subj = child.text.lower()
-                        break
-                
-                # Find direct object and keep only content nouns
-                obj = None
-                for child in token.subtree:
-                    if (("dobj" in child.dep_ or "attr" in child.dep_)
-                            and _is_meaningful_object(child)):
-                        obj = child.text.lower()
-                        break
+# =========================================================
+# SEMANTIC FRAME EXTRACTION
+# =========================================================
 
-                if subj and obj:
-                    triple = (subj, token.text.lower(), obj)
-                    if triple not in seen_triples:
-                        seen_triples.add(triple)
-                        frames["relationship_triples"].append(triple)
-        
-        # Extract entities and their relationships
-        for ent in doc.ents:
-            entity_name = ent.text.lower()
-            ner_label = ent.label_
-            
-            # Role signals based on context
-            if entity_name not in frames["role_signals"]:
-                frames["role_signals"][entity_name] = {
-                    "entity": entity_name,
-                    "types": [],
-                    "actions": [],
-                    "modifiers": []
-                }
-            
-            # Map NER to role types
-            if ner_label == "PERSON":
-                frames["role_signals"][entity_name]["types"].append("person_mentioned")
-            elif ner_label == "ORG":
-                frames["role_signals"][entity_name]["types"].append("organization_mentioned")
-            elif ner_label == "GPE" or ner_label == "LOC":
-                frames["role_signals"][entity_name]["types"].append("location_mentioned")
-            
-            # Track actions associated with this entity
+
+class SemanticFrameExtractor:
+
+    def extract(self, messages):
+
+        triples = []
+
+        if not nlp:
+            return triples
+
+        for msg in messages:
+            doc = nlp(msg)
+
             for token in doc:
-                if token.pos_ == "VERB":
-                    if ent.start <= token.i < ent.end or any(
-                        child.i == token.i for child in ent.subtree
-                    ):
-                        if token.text.lower() not in frames["role_signals"][entity_name]["actions"]:
-                            frames["role_signals"][entity_name]["actions"].append(token.text.lower())
-    
-    return frames
+
+                if token.dep_ == "ROOT":
+                    subj = None
+                    obj = None
+
+                    for child in token.children:
+                        if child.dep_ in ["nsubj", "nsubjpass"]:
+                            subj = child.text
+                        if child.dep_ in ["dobj", "pobj", "attr"] and child.pos_ in ("NOUN", "PROPN"):
+                            obj = child.text
+
+                    if subj and obj:
+                        triples.append({
+                            "subject": subj.lower(),
+                            "relation": token.text.lower(),
+                            "object": obj.lower()
+                        })
+
+        return triples[:100]
 
 
-# ── Entity-scoped Sentiment Scoper ─────────────────────────────────────────────
-def extract_entity_sentiments(messages: List[str]) -> Dict:
-    """
-    Extract sentiment tied to entities rather than whole sentences.
-    Returns dict mapping entities to their associated sentiment polarity.
-    """
-    nlp = _get_nlp()
-    TextBlob = _get_textblob()
-    
-    entity_sentiments = {}  # entity → {"polarity": float, "mentions": count, "contexts": []}
-    
-    for msg in messages:
-        doc = nlp(msg)
-        
-        # Get overall sentence sentiment
-        try:
-            blob = TextBlob(msg)
-            sentence_polarity = blob.sentiment.polarity  # -1 to 1
-        except:
-            sentence_polarity = 0.0
-        
-        # Scope sentiment to entities
-        for ent in doc.ents:
-            entity_name = ent.text.lower()
-            
-            # Check if there are sentiment indicators in the entity's sentence
-            ent_start_char = ent.start_char
-            ent_end_char = ent.end_char
-            
-            # Extract a window around the entity for local sentiment
-            local_start = max(0, ent_start_char - 50)
-            local_end = min(len(msg), ent_end_char + 50)
-            local_context = msg[local_start:local_end]
-            
-            try:
-                local_blob = TextBlob(local_context)
-                entity_polarity = local_blob.sentiment.polarity
-            except:
-                entity_polarity = sentence_polarity
-            
-            if entity_name not in entity_sentiments:
-                entity_sentiments[entity_name] = {
-                    "polarity_sum": 0.0,
-                    "mention_count": 0,
-                    "contexts": [],
-                    "sentiment_label": "neutral"
-                }
-            
-            entity_sentiments[entity_name]["polarity_sum"] += entity_polarity
-            entity_sentiments[entity_name]["mention_count"] += 1
-            entity_sentiments[entity_name]["contexts"].append(local_context.strip())
-    
-    # Calculate average polarity and sentiment label
-    for entity in entity_sentiments:
-        data = entity_sentiments[entity]
-        data["avg_polarity"] = round(data["polarity_sum"] / max(data["mention_count"], 1), 3)
-        
-        avg_pol = data["avg_polarity"]
-        if avg_pol > 0.1:
-            data["sentiment_label"] = "positive"
-        elif avg_pol < -0.1:
-            data["sentiment_label"] = "negative"
-        else:
-            data["sentiment_label"] = "neutral"
-    
-    return entity_sentiments
+# =========================================================
+# 5. TRAIT INFERENCE LAYER
+# =========================================================
 
 
-def extract_ner_persona(conv: Dict) -> Dict:
-    """spaCy NER + stats-derived persona — no LLM required."""
-    nlp    = _get_nlp()
-    stats  = extract_statistical_persona(conv)
-    all_lengths = [user_stats["avg_msg_length"] for user_stats in stats.values()]
-    style_thresholds = tuple(np.percentile(all_lengths, [33, 66])) if all_lengths else None
+class TraitInferenceLayer:
+
+    def infer(self,
+              stats,
+              events,
+              preferences,
+              sentiment,
+              semantic_frames):
+
+        traits = []
+
+        event_counter = Counter(
+            [e["value"] for e in events]
+        )
+
+        # =================================================
+        # Analytical thinker
+        # =================================================
+
+        if (
+            stats["question_ratio"] > 0.3 and
+            stats["vocab_richness"] > 0.55
+        ):
+            traits.append({
+                "trait": "analytical_thinker",
+                "confidence": 0.82,
+                "evidence": [
+                    "high question ratio",
+                    "rich vocabulary"
+                ]
+            })
+
+        # =================================================
+        # Systems oriented
+        # =================================================
+
+        systems_pref = any(
+            p["preference"] == "systems_thinking"
+            for p in preferences
+        )
+
+        if systems_pref or event_counter["technology_ai"] >= 3:
+            traits.append({
+                "trait": "systems_oriented",
+                "confidence": 0.84,
+                "evidence": [
+                    "architecture discussions",
+                    "technology focus"
+                ]
+            })
+
+        # =================================================
+        # Career ambitious
+        # =================================================
+
+        if event_counter["career_growth"] >= 2:
+            traits.append({
+                "trait": "career_ambitious",
+                "confidence": 0.78,
+                "evidence": [
+                    "repeated career discussions"
+                ]
+            })
+
+        # =================================================
+        # Active learner
+        # =================================================
+
+        if event_counter["active_learning"] >= 2:
+            traits.append({
+                "trait": "active_learner",
+                "confidence": 0.88,
+                "evidence": [
+                    "frequent learning-oriented queries"
+                ]
+            })
+
+        # =================================================
+        # Communication style traits
+        # =================================================
+
+        if stats["avg_msg_length"] < 12:
+            traits.append({
+                "trait": "concise_communicator",
+                "confidence": 0.72,
+                "evidence": ["short messages"]
+            })
+
+        if stats["avg_msg_length"] > 35:
+            traits.append({
+                "trait": "detail_oriented",
+                "confidence": 0.74,
+                "evidence": ["long detailed messages"]
+            })
+
+        # =================================================
+        # Emotional profile
+        # =================================================
+
+        if sentiment["overall_sentiment"] == "optimistic":
+            traits.append({
+                "trait": "positive_outlook",
+                "confidence": 0.69,
+                "evidence": ["positive sentiment trend"]
+            })
+
+        if sentiment["overall_sentiment"] == "frustrated":
+            traits.append({
+                "trait": "problem_focused",
+                "confidence": 0.64,
+                "evidence": ["frequent frustration indicators"]
+            })
+
+        # =================================================
+        # Semantic frame reasoning
+        # =================================================
+
+        ai_relations = sum(
+            1 for t in semantic_frames
+            if t["object"] in ["ai", "ml", "architecture", "system"]
+        )
+
+        if ai_relations >= 2:
+            traits.append({
+                "trait": "deep_technical_interest",
+                "confidence": 0.85,
+                "evidence": [
+                    "repeated semantic relations to AI systems"
+                ]
+            })
+
+        return traits
+
+
+# =========================================================
+# PERSONA ENGINE V2
+# =========================================================
+
+
+class PersonaEngineV2:
+
+    def __init__(self):
+
+        self.stats_engine = StatsEngine()
+        self.event_layer = EventExtractionLayer()
+        self.preference_layer = PreferenceMemoryLayer()
+        self.sentiment_engine = SentimentEngine()
+        self.semantic_engine = SemanticFrameExtractor()
+        self.trait_engine = TraitInferenceLayer()
+
+    def build_persona(self, messages, user_id=None):
+
+        if not messages:
+            return {}
+
+        # =================================================
+        # 1. STATS
+        # =================================================
+
+        stats = self.stats_engine.extract(messages)
+
+        # =================================================
+        # 2. EVENTS
+        # =================================================
+
+        events = self.event_layer.extract(messages)
+
+        # =================================================
+        # 3. PREFERENCES
+        # =================================================
+
+        preferences = self.preference_layer.extract(messages)
+
+        # =================================================
+        # 4. SENTIMENT
+        # =================================================
+
+        sentiment = self.sentiment_engine.extract(messages)
+
+        # =================================================
+        # 5. SEMANTIC FRAMES
+        # =================================================
+
+        semantic_frames = self.semantic_engine.extract(messages)
+
+        # =================================================
+        # 6. TRAIT INFERENCE
+        # =================================================
+
+        traits = self.trait_engine.infer(
+            stats,
+            events,
+            preferences,
+            sentiment,
+            semantic_frames
+        )
+
+        # =================================================
+        # PERSONA OBJECT
+        # =================================================
+
+        persona = {
+            "user_id": user_id,
+            "timestamp": datetime.utcnow().isoformat(),
+
+            "stats_profile": stats,
+
+            "event_memory": events,
+
+            "preferences": preferences,
+
+            "sentiment_profile": sentiment,
+
+            "semantic_memory": {
+                "relationship_triples": semantic_frames
+            },
+
+            "traits": traits,
+
+            "identity_summary": self._build_identity_summary(
+                traits,
+                preferences,
+                sentiment
+            )
+        }
+
+        return persona
+
+    # =====================================================
+    # IDENTITY SUMMARY
+    # =====================================================
+
+    def _build_identity_summary(self,
+                                traits,
+                                preferences,
+                                sentiment):
+
+        trait_names = [t["trait"] for t in traits]
+
+        pref_names = [
+            p["preference"]
+            for p in preferences
+        ]
+
+        summary = {
+            "primary_traits": trait_names[:5],
+            "communication_preferences": pref_names,
+            "overall_emotional_pattern": sentiment[
+                "overall_sentiment"
+            ]
+        }
+
+        return summary
+
+
+# =========================================================
+# ENGINE SINGLETONS  (shared across all module-level calls)
+# =========================================================
+
+_stats_engine     = StatsEngine()
+_event_layer      = EventExtractionLayer()
+_preference_layer = PreferenceMemoryLayer()
+_sentiment_engine = SentimentEngine()
+_semantic_engine  = SemanticFrameExtractor()
+_trait_engine     = TraitInferenceLayer()
+
+
+# =========================================================
+# MODULE-LEVEL API (used by pipeline and tests)
+# =========================================================
+
+
+def extract_statistical_persona(conv):
+    """Statistics-based persona for User_1 and User_2 via StatsEngine."""
     result = {}
-
-    for user_key, msg_list in [("User_1", conv["user1_msgs"]), ("User_2", conv["user2_msgs"])]:
-        if not msg_list:
+    for user_key, msgs in [("User_1", conv.get("user1_msgs", [])),
+                            ("User_2", conv.get("user2_msgs", []))]:
+        if not msgs:
             result[user_key] = {
-                "habits": [], "personal_facts": [],
-                "personality": "unknown", "communication_style": "unknown"
+                "avg_msg_length": 0.0, "question_ratio": 0.0,
+                "emoji_count": 0, "vocab_richness": 0.0, "msg_count": 0,
+                "signals": {"food_mentions": 0, "fitness_mentions": 0, "pet_mentions": 0},
             }
             continue
 
-        personal_facts = []
-        seen = set()
-        for msg in msg_list:
-            doc = nlp(msg)
-            for ent in doc.ents:
-                prefix = _NER_LABELS.get(ent.label_)
-                if prefix:
-                    fact = f"{prefix}: {ent.text}"
-                    if fact not in seen:
-                        seen.add(fact)
-                        personal_facts.append(fact)
+        stats  = _stats_engine.extract(msgs)
+        tokens = tokenize(" ".join(msgs))
 
-        user_stats = stats[user_key]
         result[user_key] = {
-            "habits":             _habits_from_signals(user_stats["signals"]),
-            "personal_facts":     personal_facts,
-            "personality":        _personality_from_stats(user_stats),
-            "communication_style": _communication_style_from_stats(user_stats, style_thresholds),
+            "avg_msg_length": stats["avg_msg_length"],
+            "question_ratio": stats["question_ratio"],
+            "emoji_count":    stats["emoji_count"],
+            "vocab_richness": stats["vocab_richness"],
+            "msg_count":      stats["message_count"],
+            "signals": {
+                "food_mentions":    count_matches(tokens, FOOD_WORDS),
+                "fitness_mentions": count_matches(tokens, FITNESS_WORDS),
+                "pet_mentions":     count_matches(tokens, PET_WORDS),
+            },
         }
     return result
 
 
-def extract_semantic_frame_persona(messages: List[str]) -> Dict:
-    """
-    Extract semantic frames, relationship triples, and role signals.
-    """
-    frames = extract_semantic_frames(messages)
-    
-    return {
-        "relationship_triples": frames["relationship_triples"][:10],  # Top 10 triples
-        "role_signals": frames["role_signals"],
-        "action_targets": frames["action_targets"]
-    }
+def extract_ner_persona(conv):
+    """NER + heuristic persona wired through EventExtractionLayer,
+    SentimentEngine, and PreferenceMemoryLayer."""
+    user1_msgs = conv.get("user1_msgs", [])
+    user2_msgs = conv.get("user2_msgs", [])
 
+    def avg_len(msgs):
+        if not msgs:
+            return 0.0
+        return sum(len(m.split()) for m in msgs) / len(msgs)
 
-def extract_entity_sentiment_persona(messages: List[str]) -> Dict:
-    """
-    Extract entity-scoped sentiments.
-    """
-    entity_sentiments = extract_entity_sentiments(messages)
-    
-    # Group by sentiment
-    positive_entities = [
-        e for e, data in entity_sentiments.items()
-        if data["sentiment_label"] == "positive"
-    ]
-    negative_entities = [
-        e for e, data in entity_sentiments.items()
-        if data["sentiment_label"] == "negative"
-    ]
-    neutral_entities = [
-        e for e, data in entity_sentiments.items()
-        if data["sentiment_label"] == "neutral"
-    ]
-    
-    return {
-        "entity_sentiments": entity_sentiments,
-        "positive_entities": positive_entities[:10],
-        "negative_entities": negative_entities[:10],
-        "neutral_entities": neutral_entities[:10]
-    }
+    u1_avg = avg_len(user1_msgs)
+    u2_avg = avg_len(user2_msgs)
+    overall_avg = (u1_avg + u2_avg) / 2 or 1.0
 
-
-def extract_full_persona(conv: Dict) -> Dict:
-    """
-    Full persona extraction pipeline:
-    1. Statistical engine
-    2. NER engine
-    3. Semantic frame engine
-    4. Entity-scoped sentiment scoper
-    """
-    stats = extract_statistical_persona(conv)
-    ner   = extract_ner_persona(conv)
-
-    combined = {}
-    for user_key in ["User_1", "User_2"]:
-        msg_list = conv.get(f"user{'1' if user_key == 'User_1' else '2'}_msgs", [])
-        
-        # Extract semantic frames and entity sentiments for this user
-        semantic_frames = extract_semantic_frame_persona(msg_list) if msg_list else {}
-        entity_sentiments = extract_entity_sentiment_persona(msg_list) if msg_list else {}
-        
-        combined[user_key] = {
-            "stats":      stats.get(user_key, {}),
-            "ner":        ner.get(user_key, {}),
-            "semantic_frames": semantic_frames,
-            "entity_sentiments": entity_sentiments,
-            "conv_id":    conv["conv_id"]
-        }
-    return combined
-
-
-def aggregate_persona_across_batches(all_persona_entries: List[Dict]) -> Dict:
-    """Aggregate per-batch persona entries into a final user profile."""
-    aggregated = {
-        "User_1": {
-            "habits": set(), "personal_facts": set(),
-            "personality_notes": [], "total_msgs": 0,
-            "avg_msg_length_sum": 0.0, "conv_count": 0,
-            "relationship_triples": [], "positive_entities": set(),
-            "negative_entities": set(), "role_signals": {}
-        },
-        "User_2": {
-            "habits": set(), "personal_facts": set(),
-            "personality_notes": [], "total_msgs": 0,
-            "avg_msg_length_sum": 0.0, "conv_count": 0,
-            "relationship_triples": [], "positive_entities": set(),
-            "negative_entities": set(), "role_signals": {}
-        },
-    }
-
-    for entry in all_persona_entries:
-        for user_key in ["User_1", "User_2"]:
-            data  = entry.get(user_key, {})
-            # Accept both new "ner" key and legacy "llm" key
-            ner   = data.get("ner", data.get("llm", {}))
-            stats = data.get("stats", {})
-            semantic_frames = data.get("semantic_frames", {})
-            entity_sentiments = data.get("entity_sentiments", {})
-
-            for h in ner.get("habits", []):
-                aggregated[user_key]["habits"].add(h)
-            for f in ner.get("personal_facts", []):
-                aggregated[user_key]["personal_facts"].add(f)
-            p = ner.get("personality", "")
-            if p and p not in ("unknown", "neutral"):
-                aggregated[user_key]["personality_notes"].append(p)
-
-            aggregated[user_key]["total_msgs"]         += stats.get("msg_count", 0)
-            aggregated[user_key]["avg_msg_length_sum"] += stats.get("avg_msg_length", 0)
-            aggregated[user_key]["conv_count"]         += 1
-            
-            # Aggregate semantic frames
-            for triple in semantic_frames.get("relationship_triples", []):
-                aggregated[user_key]["relationship_triples"].append(triple)
-            
-            # Aggregate role signals
-            for entity, roles in semantic_frames.get("role_signals", {}).items():
-                if entity not in aggregated[user_key]["role_signals"]:
-                    aggregated[user_key]["role_signals"][entity] = {
-                        "types": set(), "actions": set(), "occurrences": 0
-                    }
-                aggregated[user_key]["role_signals"][entity]["types"].update(roles.get("types", []))
-                aggregated[user_key]["role_signals"][entity]["actions"].update(roles.get("actions", []))
-                aggregated[user_key]["role_signals"][entity]["occurrences"] += 1
-            
-            # Aggregate entity sentiments
-            for entity in entity_sentiments.get("positive_entities", []):
-                aggregated[user_key]["positive_entities"].add(entity)
-            for entity in entity_sentiments.get("negative_entities", []):
-                aggregated[user_key]["negative_entities"].add(entity)
-
-    final = {}
-    for user_key in ["User_1", "User_2"]:
-        agg   = aggregated[user_key]
-        count = max(agg["conv_count"], 1)
-        
-        # Convert role signals sets back to lists
-        role_signals_final = {}
-        for entity, roles in agg["role_signals"].items():
-            role_signals_final[entity] = {
-                "types": list(roles["types"]),
-                "actions": list(roles["actions"]),
-                "occurrences": roles["occurrences"]
+    result = {}
+    for user_key, msgs in [("User_1", user1_msgs), ("User_2", user2_msgs)]:
+        if not msgs:
+            result[user_key] = {
+                "habits": [], "personal_facts": [],
+                "personality": "neutral", "communication_style": "unknown",
+                "preferences": [],
             }
-        
-        final[user_key] = {
-            "habits":         list(agg["habits"]),
-            "personal_facts": list(agg["personal_facts"]),
-            "personality":    " | ".join(agg["personality_notes"][:5]),
-            "avg_msg_length": round(agg["avg_msg_length_sum"] / count, 2),
-            "total_msgs":     agg["total_msgs"],
-            "relationship_triples": agg["relationship_triples"][:20],
-            "positive_entities": list(agg["positive_entities"])[:20],
-            "negative_entities": list(agg["negative_entities"])[:20],
-            "role_signals": role_signals_final
+            continue
+
+        joined = " ".join(msgs)
+        tokens = tokenize(joined)
+
+        # --- Habits: domain signals + EventExtractionLayer for tech/career/learning ---
+        events      = _event_layer.extract(msgs)
+        event_types = {e["value"] for e in events}
+
+        habits = []
+        if count_matches(tokens, FOOD_WORDS) >= 1:
+            habits.append("discusses food/cooking")
+        if count_matches(tokens, FITNESS_WORDS) >= 1:
+            habits.append("discusses fitness/exercise")
+        if count_matches(tokens, PET_WORDS) >= 1:
+            habits.append("discusses pets")
+        if "technology_ai" in event_types:
+            habits.append("discusses technology")
+        if "career_growth" in event_types:
+            habits.append("discusses career")
+        if "active_learning" in event_types:
+            habits.append("discusses learning")
+
+        # --- Personal facts via spaCy NER ---
+        personal_facts = []
+        if nlp:
+            doc = nlp(joined)
+            label_map = {
+                "PERSON": "person", "GPE": "location", "LOC": "location",
+                "ORG": "organization", "NORP": "group", "FAC": "place",
+            }
+            for ent in doc.ents:
+                if ent.label_ in label_map:
+                    fact = f"mentions {label_map[ent.label_]}: {ent.text}"
+                    if fact not in personal_facts:
+                        personal_facts.append(fact)
+
+        # --- Personality from SentimentEngine ---
+        sentiment = _sentiment_engine.extract(msgs)
+        if sentiment["overall_sentiment"] == "optimistic":
+            personality = "expressive"
+        elif sentiment["overall_sentiment"] == "frustrated":
+            personality = "cautious"
+        else:
+            personality = "inquisitive"
+
+        # --- Preferences from PreferenceMemoryLayer ---
+        prefs = _preference_layer.extract(msgs)
+
+        # --- Communication style (relative length thresholds) ---
+        user_avg  = avg_len(msgs)
+        emoji_tag = "some emojis" if re.search(r"[😀-🙏🌀-🗿🚀-🛿🇠-🇿]", joined) else "no emojis"
+
+        if user_avg < overall_avg * 0.6:
+            length_tag = "terse"
+        elif user_avg > overall_avg * 1.4:
+            length_tag = "verbose"
+        else:
+            length_tag = "medium-length messages"
+
+        result[user_key] = {
+            "habits":             habits,
+            "personal_facts":     personal_facts,
+            "personality":        personality,
+            "communication_style": f"casual, {length_tag}, {emoji_tag}",
+            "preferences":        prefs,
         }
-    return final
+    return result
+
+
+def extract_semantic_frames(messages):
+    """Triples via SemanticFrameExtractor (NOUN/PROPN objects only).
+    Returns {"relationship_triples": [(subj, rel, obj), ...]}"""
+    raw = _semantic_engine.extract(messages)
+    triples = [(t["subject"], t["relation"], t["object"]) for t in raw]
+    return {"relationship_triples": triples}
+
+
+def extract_full_persona(conv):
+    """Full pipeline persona: stats + NER + events + preferences + traits
+    via all engine layers.  'ner' key preserved for aggregate compatibility."""
+    user1_msgs = conv.get("user1_msgs", [])
+    user2_msgs = conv.get("user2_msgs", [])
+    all_msgs   = user1_msgs + user2_msgs
+
+    stats_map = extract_statistical_persona(conv)
+    ner_map   = extract_ner_persona(conv)
+    semantic_frames = _semantic_engine.extract(all_msgs)
+
+    result = {}
+    for user_key, msgs in [("User_1", user1_msgs), ("User_2", user2_msgs)]:
+        stats     = _stats_engine.extract(msgs) if msgs else _stats_engine.extract([""])
+        events    = _event_layer.extract(msgs) if msgs else []
+        prefs     = _preference_layer.extract(msgs) if msgs else []
+        sentiment = _sentiment_engine.extract(msgs) if msgs else _sentiment_engine.extract([""])
+        traits    = _trait_engine.infer(stats, events, prefs, sentiment, semantic_frames)
+
+        result[user_key] = {
+            "stats":       stats_map.get(user_key, {}),
+            "ner":         ner_map.get(user_key, {}),
+            "events":      events,
+            "preferences": prefs,
+            "traits":      traits,
+        }
+    return result
+
+
+def aggregate_persona_across_batches(personas):
+    """Merge {user_key: {ner/llm, stats, ...}} dicts from multiple batches."""
+    merged = {}
+    for persona_dict in personas:
+        for user_key, data in persona_dict.items():
+            if user_key not in merged:
+                merged[user_key] = {
+                    "habits": [], "personal_facts": [],
+                    "personality": [], "communication_style": [],
+                }
+            ner_data = data.get("ner") or data.get("llm") or {}
+            for habit in ner_data.get("habits", []):
+                if habit not in merged[user_key]["habits"]:
+                    merged[user_key]["habits"].append(habit)
+            for fact in ner_data.get("personal_facts", []):
+                if fact not in merged[user_key]["personal_facts"]:
+                    merged[user_key]["personal_facts"].append(fact)
+            if ner_data.get("personality"):
+                merged[user_key]["personality"].append(ner_data["personality"])
+            if ner_data.get("communication_style"):
+                merged[user_key]["communication_style"].append(ner_data["communication_style"])
+
+    for user_key in merged:
+        personalities = merged[user_key]["personality"]
+        merged[user_key]["personality"] = (
+            Counter(personalities).most_common(1)[0][0] if personalities else "neutral"
+        )
+        styles = merged[user_key]["communication_style"]
+        merged[user_key]["communication_style"] = (
+            Counter(styles).most_common(1)[0][0] if styles else "casual"
+        )
+    return merged
+
+
+# =========================================================
+# SIMPLE TEST
+# =========================================================
+
+if __name__ == "__main__":
+
+    msgs = [
+        "I want to become an AI systems architect.",
+        "Give detailed explanation of RAG pipelines.",
+        "I love building ML systems and deployment workflows.",
+        "Can you explain observability in production AI systems?",
+        "I am frustrated with DSA but enjoy AI architecture."
+    ]
+
+    engine = PersonaEngineV2()
+
+    persona = engine.build_persona(
+        msgs,
+        user_id="demo_user"
+    )
+
+    from pprint import pprint
+    pprint(persona)
+
