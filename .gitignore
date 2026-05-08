@@ -43,13 +43,16 @@ env/
 
 # Project specific
 data/
-kb/
 logs/
 *.csv
 *.pdf
 *.db
 *.json
 chromadb/
+!kb/
+!kb/**
+!kb/chromadb/
+!kb/chromadb/**
 
 # OS
 .DS_Store
