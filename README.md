@@ -367,7 +367,7 @@ conversation
 
 ## Live Demo
 
-🔗 [chatanalyzer-6nr3wskqbs5obudbmnwib9.streamlit.app](https://chatanalyzer-6nr3wskqbs5obudbmnwib9.streamlit.app/)
+🔗 [chatanalyzer-6nr3wskqbs5obudbmnwib9.streamlit.app](https://chatanalyzer-wt5qmalbvndicvtqjcoktp.streamlit.app/)
 
 ---
 
