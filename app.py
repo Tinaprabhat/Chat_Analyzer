@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.kb_store import is_kb_populated
+from src.kb_store import is_kb_populated, delete_kb
 from src.query_engine import answer_query
 from src.pipeline import run_pipeline
 from src.config import CSV_PATH, PDF_PATH
@@ -123,20 +123,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🤖 LLM Configuration")
 
-    groq_key = st.text_input(
-        "Groq API Key",
-        value=os.getenv("GROQ_API_KEY", ""),
-        type="password",
-        key="groq",
-        help="Primary LLM. Falls back to local Ollama if not set."
-    )
-    if groq_key:
-        os.environ["GROQ_API_KEY"] = groq_key
-
     if os.getenv("GROQ_API_KEY", ""):
-        st.success("✅ Groq ready (primary LLM)")
+        st.success("✅ Groq llm connected")
     else:
-        st.warning("⚠️ No Groq key — will use Ollama fallback")
+        st.warning("⚠️ No Groq key set — will use Ollama fallback")
 
     # Ollama fallback status
     import urllib.request as _urllib
@@ -189,6 +179,24 @@ with st.sidebar:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Pipeline failed: {e}")
+
+    st.markdown("---")
+    st.markdown("### 🧹 Knowledge Base Control")
+    confirm_delete = st.checkbox("Confirm delete existing KB before rebuild", value=False)
+    if st.button("🗑️ Delete KB and Rebuild", use_container_width=True):
+        if not confirm_delete:
+            st.error("Please confirm before deleting the existing KB.")
+        elif not os.path.exists(CSV_PATH) and not os.path.exists(PDF_PATH):
+            st.error("No CSV or PDF found. Upload one first.")
+        else:
+            with st.spinner("Deleting existing KB and rebuilding..."):
+                try:
+                    delete_kb()
+                    run_pipeline(force_rebuild=True)
+                    st.success("✅ KB deleted and rebuilt successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete/rebuild failed: {e}")
 
     st.markdown("---")
     st.markdown("### ℹ️ Route Legend")

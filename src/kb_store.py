@@ -1,11 +1,12 @@
 import json
 import sqlite3
 import os
+import shutil
 from typing import Dict, List, Any
 import chromadb
 from chromadb.config import Settings
 from src.config import (CHROMA_DIR, PERSONA_JSON, META_DB,
-                         CHROMA_TOPICS_COLLECTION, CHROMA_SUMMARIES_COLLECTION,
+                         KB_DIR, CHROMA_TOPICS_COLLECTION, CHROMA_SUMMARIES_COLLECTION,
                          CHROMA_CHECKPOINTS_COLLECTION)
 from src.logger import logger
 
@@ -186,6 +187,18 @@ def load_all_personas() -> Dict:
         return {}
     with open(PERSONA_JSON, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def delete_kb() -> None:
+    """Remove all KB artifacts so the knowledge base can be rebuilt from scratch."""
+    global _chroma_client
+    _chroma_client = None
+    try:
+        shutil.rmtree(KB_DIR, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"Failed to delete KB directory: {e}")
+    os.makedirs(KB_DIR, exist_ok=True)
+    os.makedirs(CHROMA_DIR, exist_ok=True)
 
 
 def is_kb_populated() -> bool:
